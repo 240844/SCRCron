@@ -35,21 +35,21 @@
 			"compileCommandFragments" : 
 			[
 				{
-					"fragment" : "-g -std=gnu11 -fdiagnostics-color=always"
+					"fragment" : "-g -std=gnu++20 -fdiagnostics-color=always"
 				}
 			],
-			"language" : "C",
+			"language" : "CXX",
 			"languageStandard" : 
 			{
 				"backtraces" : 
 				[
 					1
 				],
-				"standard" : "11"
+				"standard" : "20"
 			},
 			"sourceIndexes" : 
 			[
-				0
+				1
 			]
 		}
 	],
@@ -67,7 +67,7 @@
 				"role" : "flags"
 			}
 		],
-		"language" : "C"
+		"language" : "CXX"
 	},
 	"name" : "SCRProj2",
 	"nameOnDisk" : "SCRProj2",
@@ -79,14 +79,14 @@
 	"sourceGroups" : 
 	[
 		{
-			"name" : "Source Files",
+			"name" : "Header Files",
 			"sourceIndexes" : 
 			[
 				0
 			]
 		},
 		{
-			"name" : "Header Files",
+			"name" : "Source Files",
 			"sourceIndexes" : 
 			[
 				1
@@ -97,13 +97,13 @@
 	[
 		{
 			"backtrace" : 1,
-			"compileGroupIndex" : 0,
-			"path" : "cron.c",
+			"path" : "cron.h",
 			"sourceGroupIndex" : 0
 		},
 		{
 			"backtrace" : 1,
-			"path" : "cron.h",
+			"compileGroupIndex" : 0,
+			"path" : "cron.cpp",
 			"sourceGroupIndex" : 1
 		}
 	],

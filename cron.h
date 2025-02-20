@@ -21,7 +21,7 @@ typedef enum {
 }operation_t;
 
 typedef struct {
-    long id;
+    unsigned long id;
     char command[256];
     char command_args[256];
 
