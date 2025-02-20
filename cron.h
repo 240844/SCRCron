@@ -25,16 +25,17 @@ typedef struct {
     char command[256];
     char command_args[256];
 
-    bool is_absolute; // czy jest czas wzgledny czy nie
-    time_t time;
-    time_t interval;
+    bool is_absolute;
+    time_t time_value;
+    time_t time_interval;
     operation_t operation;
-    time_t timer_id;
+    timer_t timer_id;
 
     char queue_name[50];
+    bool terminate;
 }query_t;
 
-void timer_thread(union sigval query_union);
-void delete_cron_query(long id);
+void timer(union sigval query_sig);
+void delete_cron_query(unsigned long id);
 
 #endif //CRON_H
