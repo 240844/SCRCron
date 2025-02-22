@@ -19,18 +19,20 @@ static pthread_mutex_t query_mutex;
 vector<scheduled_query_t*> qvec;
 
 int start_server(int server_id);
-void connect_to_server(data_t* shared_data, int argc, char* argv[]);
 void fill_query(scheduled_query_t* query);
 void list_query(scheduled_query_t* query);
 void timer(union sigval query_sig);
 void delete_cron_query(unsigned long id);
+
+void connect_to_server(data_t* shared_data, int argc, char* argv[]);
+void handle_abs_time(scheduled_query_t* query, int argc, char* argv[]);
+void handle_rel_time(scheduled_query_t* query, int argc, char* argv[]);
 
 
 int main(int argc, char* argv[]) {
     const int server_id = shm_open(SHM_SERVER, O_RDONLY, 0777);
     data_t* shared_data = (data_t*) mmap(NULL, sizeof(data_t), PROT_READ, MAP_SHARED, server_id, 0);
     if (!shared_data) {
-        if (server_id != 1) munmap(shared_data, sizeof(data_t));
         start_server(server_id);
     }
     else {
@@ -38,7 +40,6 @@ int main(int argc, char* argv[]) {
         close(server_id);
         munmap(shared_data, sizeof(data_t));
     }
-    printf("Hello, World!\n");
     return 0;
 }
 
@@ -253,51 +254,13 @@ void connect_to_server(data_t* shared_data, int argc, char* argv[]) {
     if (strcmp(argv[1], "add") == 0) {
         query.operation = QUERY_OP_ADD;
 
-        if (strcmp(argv[2], "rel") == 0) {
-            if (argc < 4) {
-                sscanf(argv[3], "%ld", &query.execution_time);
-
-                int i = 4;
-                if (strcmp(argv[i], "-req") == 0) {
-                    sscanf(argv[i+1], "%ld", &query.repeat_interval);
-                    i += 2;
-                }
-                strcat(query.command_name, argv[i]);
-                i++;
-                for (int j=i;j<argc; j++) {
-                    if (j!=i) strcat(query.args, " ");
-                    strcat(query.args, argv[j]);
-                }
-                query.absolute_time = false;
-                mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
-            }
+        if (strcmp(argv[2], "r") == 0) {
+            handle_rel_time(&query, argc, argv);
+            mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
         }
-        else if (strcmp(argv[2], "abs") == 0) {
-            if (argc >= 5) {
-                struct tm abs_time;
-                sscanf(argv[3], "%d%*c%d%*c%d", &abs_time.tm_hour, &abs_time.tm_min, &abs_time.tm_sec);
-                sscanf(argv[3], "%d%*c%d%*c%d", &abs_time.tm_mday, &abs_time.tm_mon, &abs_time.tm_year);
-
-                abs_time.tm_mon -= 1;
-                abs_time.tm_year -= 1900;
-
-                int i = 5;
-                if (strcmp(argv[i], "-req") == 0) {
-                    sscanf(argv[i+1], "%ld", &query.repeat_interval);
-                    i += 2;
-                }
-                strcat(query.command_name, argv[i]);
-                i++;
-                for (int j=i;j<argc; j++) {
-                    if (j!=i) strcat(query.args, " ");
-                    strcat(query.args, argv[j]);
-                }
-
-                query.execution_time = mktime(&abs_time);
-                query.absolute_time = true;
-
-                mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
-            }
+        else if (strcmp(argv[2], "a") == 0) {
+            handle_abs_time(&query, argc, argv);
+            mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
         }
     }
     else if (strcmp(argv[1], "del") == 0){
@@ -305,10 +268,10 @@ void connect_to_server(data_t* shared_data, int argc, char* argv[]) {
         sscanf(argv[2], "%ld", &query.id);
         mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
     }
-    else if (strcmp(argv[1], "list") == 0) {
+    else if (strcmp(argv[1], "show") == 0) {
         query.operation = QUERY_OP_SHOW;
 
-        sprintf(query.queue_name, "TASK_QUEUE_%d", getpid());
+        sprintf(query.queue_name, "/TASK_QUEUE_%d", getpid());
 
         int queue_read = mq_open(query.queue_name, O_RDONLY | O_CREAT, 0666, &attr);
 
@@ -337,4 +300,52 @@ void connect_to_server(data_t* shared_data, int argc, char* argv[]) {
     }
     mq_close(queue_write);
 
+}
+
+void handle_abs_time(scheduled_query_t* query, int argc, char* argv[]) {
+    if (argc < 5) {
+        return;
+    }
+        struct tm abs_time;
+        sscanf(argv[3], "%d%*c%d%*c%d", &abs_time.tm_hour, &abs_time.tm_min, &abs_time.tm_sec);
+        sscanf(argv[3], "%d%*c%d%*c%d", &abs_time.tm_mday, &abs_time.tm_mon, &abs_time.tm_year);
+
+        abs_time.tm_mon -= 1;
+        abs_time.tm_year -= 1900;
+
+        int i = 5;
+        if (strcmp(argv[i], "-rep") == 0) {
+            sscanf(argv[i+1], "%ld", &query->repeat_interval);
+            i += 2;
+        }
+        strcat(query->command_name, argv[i]);
+        i++;
+        for (int j=i;j<argc; j++) {
+            if (j!=i) strcat(query->args, " ");
+            strcat(query->args, argv[j]);
+        }
+
+    query->execution_time = mktime(&abs_time);
+    query->absolute_time = true;
+
+}
+
+void handle_rel_time(scheduled_query_t* query, int argc, char* argv[]) {
+    if (argc < 4) {
+        return;
+    }
+        sscanf(argv[3], "%ld", &query->execution_time);
+
+        int i = 4;
+        if (strcmp(argv[i], "-rep") == 0) {
+            sscanf(argv[i+1], "%ld", &query->repeat_interval);
+            i += 2;
+        }
+        strcat(query->command_name, argv[i]);
+        i++;
+        for (int j=i;j<argc; j++) {
+            if (j!=i) strcat(query->args, " ");
+            strcat(query->args, argv[j]);
+        }
+        query->absolute_time = false;
 }
