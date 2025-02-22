@@ -16,12 +16,14 @@
 using namespace std;
 
 static pthread_mutex_t query_mutex;
-vector<query_t*> qvec;
+vector<scheduled_query_t*> qvec;
 
 int start_server(int server_id);
 void connect_to_server(data_t* shared_data, int argc, char* argv[]);
-void fill_query(query_t* query);
-void list_query(query_t* query);
+void fill_query(scheduled_query_t* query);
+void list_query(scheduled_query_t* query);
+void timer(union sigval query_sig);
+void delete_cron_query(unsigned long id);
 
 
 int main(int argc, char* argv[]) {
@@ -69,7 +71,7 @@ int start_server(int server_id) {
     attr.mq_flags = 0;
     attr.mq_curmsgs = 0;
     attr.mq_maxmsg = 10;
-    attr.mq_msgsize = sizeof(query_t);
+    attr.mq_msgsize = sizeof(scheduled_query_t);
 
     const mqd_t server_queue = mq_open(TASK_QUEUE, O_RDONLY | O_CREAT, 0666, &attr);
 
@@ -93,47 +95,41 @@ int start_server(int server_id) {
     unsigned long counter = 0;
 
     while (is_server_running) {
-        query_t* query = (query_t*) calloc(1, sizeof(query_t));
+        scheduled_query_t query = {0};
 
-        if (!query) {
-            printf("Couldn't allocate memory\n");
-            continue;
-        }
+        mq_receive(server_queue, (char*)&query, sizeof(scheduled_query_t), NULL);
 
-        mq_receive(server_queue, (char*)query, sizeof(query_t), NULL);
-
-        operation_t operation = query->operation;
+        query_operation_t operation = query.operation;
 
         switch (operation) {
-            case QUERY_EXIT:
+            case QUERY_OP_EXIT:
                 save_log(LOG_STANDARD, "Exit query\n");
                 is_server_running = false;
                 break;
-            case QUERY_ADD:
+            case QUERY_OP_ADD:
                 save_log(LOG_STANDARD, "Add query\n");
-                fill_query(query);
-                query->id = counter;
+                fill_query(&query);
+                query.id = counter;
                 counter++;
                 pthread_mutex_lock(&query_mutex);
-                qvec.push_back(query);
+                qvec.push_back(&query);
                 pthread_mutex_unlock(&query_mutex);
                 save_log(LOG_STANDARD, "Added task to query\n");
                 break;
-            case QUERY_LIST:
+            case QUERY_OP_SHOW:
                 save_log(LOG_STANDARD, "List query\n");
                 pthread_mutex_lock(&query_mutex);
-                list_query(query);
+                list_query(&query);
                 pthread_mutex_unlock(&query_mutex);
                 break;
-            case QUERY_DELETE:
+            case QUERY_OP_DELETE:
                 save_log(LOG_STANDARD, "Delete query\n");
                 pthread_mutex_lock(&query_mutex);
-                delete_cron_query(query->id);
+                delete_cron_query(query.id);
                 pthread_mutex_unlock(&query_mutex);
                 break;
         }
 
-        free(query);
     }
 
     pthread_mutex_destroy(&query_mutex);
@@ -147,60 +143,53 @@ int start_server(int server_id) {
     return server_id;
 }
 
-void list_query(query_t* query) {
+
+void list_query(scheduled_query_t* query) {
     struct mq_attr attr;
     attr.mq_flags = 0;
     attr.mq_curmsgs = 0;
     attr.mq_maxmsg = 10;
-    attr.mq_msgsize = sizeof(query_t);
+    attr.mq_msgsize = sizeof(scheduled_query_t);
     int queue = mq_open(query->queue_name, O_WRONLY, 0666, &attr);
     for (int i=0; i<qvec.size();i++) {
-        query_t* q = qvec.at(i);
-        q->terminate = false;
-        mq_send(queue, (char*) q, sizeof(query_t), 1);
+        scheduled_query_t* q = qvec.at(i);
+        q->should_terminate = false;
+        mq_send(queue, (char*) q, sizeof(scheduled_query_t), 1);
     }
 
-    query_t q;
-    q.terminate = true;
-    mq_send(queue, (char*) &q, sizeof(query_t), 1);
+    scheduled_query_t q;
+    q.should_terminate = true;
+    mq_send(queue, (char*) &q, sizeof(scheduled_query_t), 1);
     mq_close(queue);
 }
 
-void fill_query(query_t* query) {
+
+void fill_query(scheduled_query_t* query) {
     timer_t timer_id;
 
-    struct sigevent *timer_sigvent = (struct sigevent*) calloc(1, sizeof(struct sigevent));
-    if (!timer_sigvent) {
-        printf("Couldn't allocate memory\n");
-        return;
-    }
+    struct sigevent timer_sigvent = {0};
 
-    timer_sigvent->sigev_notify = SIGEV_THREAD;
-    timer_sigvent->sigev_notify_function = timer;
-    timer_sigvent->sigev_value.sival_ptr = query;
+    timer_sigvent.sigev_notify = SIGEV_THREAD;
+    timer_sigvent.sigev_notify_function = timer;
+    timer_sigvent.sigev_value.sival_ptr = query;
 
-    timer_create(CLOCK_REALTIME, timer_sigvent, &timer_id);
-    free(timer_sigvent);
+    timer_create(CLOCK_REALTIME, &timer_sigvent, &timer_id);
 
-    struct itimerspec *timer_itimerspec = (struct itimerspec*) calloc(1, sizeof(struct itimerspec));
-    if (!timer_itimerspec) {
-        printf("Couldn't allocate memory\n");
-        return;
-    }
+    struct itimerspec timer_itimerspec = {0};
 
-    timer_itimerspec->it_value.tv_sec = query->time_value;
-    timer_itimerspec->it_value.tv_nsec = 0;
-    timer_itimerspec->it_interval.tv_sec = query->time_interval;
-    timer_itimerspec->it_interval.tv_nsec = 0;
+    timer_itimerspec.it_value.tv_sec = query->execution_time;
+    timer_itimerspec.it_value.tv_nsec = 0;
+    timer_itimerspec.it_interval.tv_sec = query->repeat_interval;
+    timer_itimerspec.it_interval.tv_nsec = 0;
     int is_abs = 0;
-    if (query->is_absolute) {
+    if (query->absolute_time) {
         is_abs = TIMER_ABSTIME;
     }
-    timer_settime(timer_id, is_abs, timer_itimerspec, NULL);
-    free(timer_itimerspec);
+    timer_settime(timer_id, is_abs, &timer_itimerspec, NULL);
     query->timer_id = timer_id;
 
 }
+
 
 void delete_cron_query(const unsigned long id) {
     for (int i=0; i<qvec.size(); i++) {
@@ -212,19 +201,20 @@ void delete_cron_query(const unsigned long id) {
     }
 }
 
+
 void timer(const union sigval query_sig) {
     pthread_mutex_lock(&query_mutex);
-    query_t* query = (query_t*)query_sig.sival_ptr;
+    scheduled_query_t* query = (scheduled_query_t*)query_sig.sival_ptr;
     pid_t pid;
     char* argv[3];
-    argv[0] = query->command;
-    argv[1] = query->command_args;
+    argv[0] = query->command_name;
+    argv[1] = query->args;
     argv[2] = NULL;
 
-    posix_spawn(&pid, query->command, NULL, NULL, argv, environ);
+    posix_spawn(&pid, query->command_name, NULL, NULL, argv, environ);
     pthread_mutex_unlock(&query_mutex);
 
-    if (query->time_interval == 0) {
+    if (query->repeat_interval == 0) {
         delete_cron_query(query->id);
     }
 }
@@ -251,7 +241,7 @@ void connect_to_server(data_t* shared_data, int argc, char* argv[]) {
     attr.mq_flags = 0;
     attr.mq_curmsgs = 0;
     attr.mq_maxmsg = 10;
-    attr.mq_msgsize = sizeof(query_t);
+    attr.mq_msgsize = sizeof(scheduled_query_t);
     mqd_t queue_write = mq_open(TASK_QUEUE, O_WRONLY, 0666, &attr);
 
     if (queue_write == -1) {
@@ -259,27 +249,27 @@ void connect_to_server(data_t* shared_data, int argc, char* argv[]) {
         return;
     }
 
-    query_t query = {0};
+    scheduled_query_t query = {0};
     if (strcmp(argv[1], "add") == 0) {
-        query.operation = QUERY_ADD;
+        query.operation = QUERY_OP_ADD;
 
         if (strcmp(argv[2], "rel") == 0) {
-            if (argc >= 4) {
-                sscanf(argv[3], "%ld", &query.time_value);
+            if (argc < 4) {
+                sscanf(argv[3], "%ld", &query.execution_time);
 
                 int i = 4;
                 if (strcmp(argv[i], "-req") == 0) {
-                    sscanf(argv[i+1], "%ld", &query.time_interval);
+                    sscanf(argv[i+1], "%ld", &query.repeat_interval);
                     i += 2;
                 }
-                strcat(query.command, argv[i]);
+                strcat(query.command_name, argv[i]);
                 i++;
                 for (int j=i;j<argc; j++) {
-                    if (j!=i) strcat(query.command_args, " ");
-                    strcat(query.command_args, argv[j]);
+                    if (j!=i) strcat(query.args, " ");
+                    strcat(query.args, argv[j]);
                 }
-                query.is_absolute = false;
-                mq_send(queue_write, (char*)&query, sizeof(query_t), 0);
+                query.absolute_time = false;
+                mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
             }
         }
         else if (strcmp(argv[2], "abs") == 0) {
@@ -293,30 +283,30 @@ void connect_to_server(data_t* shared_data, int argc, char* argv[]) {
 
                 int i = 5;
                 if (strcmp(argv[i], "-req") == 0) {
-                    sscanf(argv[i+1], "%ld", &query.time_interval);
+                    sscanf(argv[i+1], "%ld", &query.repeat_interval);
                     i += 2;
                 }
-                strcat(query.command, argv[i]);
+                strcat(query.command_name, argv[i]);
                 i++;
                 for (int j=i;j<argc; j++) {
-                    if (j!=i) strcat(query.command_args, " ");
-                    strcat(query.command_args, argv[j]);
+                    if (j!=i) strcat(query.args, " ");
+                    strcat(query.args, argv[j]);
                 }
 
-                query.time_value = mktime(&abs_time);
-                query.is_absolute = true;
+                query.execution_time = mktime(&abs_time);
+                query.absolute_time = true;
 
-                mq_send(queue_write, (char*)&query, sizeof(query_t), 0);
+                mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
             }
         }
     }
     else if (strcmp(argv[1], "del") == 0){
-        query.operation = QUERY_DELETE;
+        query.operation = QUERY_OP_DELETE;
         sscanf(argv[2], "%ld", &query.id);
-        mq_send(queue_write, (char*)&query, sizeof(query_t), 0);
+        mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
     }
     else if (strcmp(argv[1], "list") == 0) {
-        query.operation = QUERY_LIST;
+        query.operation = QUERY_OP_SHOW;
 
         sprintf(query.queue_name, "TASK_QUEUE_%d", getpid());
 
@@ -329,30 +319,21 @@ void connect_to_server(data_t* shared_data, int argc, char* argv[]) {
             return;
         }
 
-        mq_send(queue_write, (char*)&query, sizeof(query_t), 1);
-        query_t* res;
-        res = (query_t*) calloc(1, sizeof(query_t));
-        if (res == NULL) {
-            printf("failed to allocate memory\n");
-            mq_close(queue_read);
-            mq_unlink(query.queue_name);
-            mq_close(queue_write);
-            return;
-        }
+        mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 1);
+        scheduled_query_t res;
         while (true) {
-            mq_receive(queue_read, (char*)res, sizeof(query_t), NULL);
-            if (res->terminate) break;
-            printf("Query id:%ld\n", res->id);
-            printf("command:%s\n", res->command);
-            printf("arg:%s\n", res->command);
+            mq_receive(queue_read, (char*)&res, sizeof(scheduled_query_t), NULL);
+            if (res.should_terminate) break;
+            printf("Query id:%ld\n", res.id);
+            printf("command:%s\n", res.command_name);
+            printf("arg:%s\n", res.args);
         }
-        free(res);
         mq_close(queue_read);
         mq_unlink(query.queue_name);
     }
     else if (strcmp(argv[1], "close") == 0) {
-        query.operation = QUERY_EXIT;
-        mq_send(queue_write, (char*)&query, sizeof(query_t), 0);
+        query.operation = QUERY_OP_EXIT;
+        mq_send(queue_write, (char*)&query, sizeof(scheduled_query_t), 0);
     }
     mq_close(queue_write);
 

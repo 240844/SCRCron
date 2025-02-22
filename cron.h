@@ -14,28 +14,25 @@ typedef struct {
 } data_t;
 
 typedef enum {
-    QUERY_ADD,
-    QUERY_DELETE,
-    QUERY_LIST,
-    QUERY_EXIT
-}operation_t;
+    QUERY_OP_ADD,
+    QUERY_OP_DELETE,
+    QUERY_OP_SHOW,
+    QUERY_OP_EXIT
+}query_operation_t;
 
 typedef struct {
     unsigned long id;
-    char command[256];
-    char command_args[256];
+    char command_name[256];
+    char args[256];
 
-    bool is_absolute;
-    time_t time_value;
-    time_t time_interval;
-    operation_t operation;
+    bool absolute_time;
+    time_t execution_time;
+    time_t repeat_interval;
+    query_operation_t operation;
     timer_t timer_id;
 
     char queue_name[50];
-    bool terminate;
-}query_t;
-
-void timer(union sigval query_sig);
-void delete_cron_query(unsigned long id);
+    bool should_terminate;
+}scheduled_query_t;
 
 #endif //CRON_H
